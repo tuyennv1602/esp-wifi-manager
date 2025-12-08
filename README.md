@@ -1,5 +1,7 @@
 # ESP_WiFi_Manager
 
+![WiFi Configuration Demo](wifi_configuration.png)
+
 Simple WiFi manager for ESP8266 / ESP32.
 
 Features:
@@ -46,6 +48,12 @@ void loop() {
 }
 ```
 
-Notes:
-- This library targets ESP8266 and ESP32 boards.
+
+---
+
+## Support
+
+If you find this project helpful, you can support me:
+
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-orange?logo=buy-me-a-coffee&style=for-the-badge)](https://buymeacoffee.com/thuongptksj)
 
