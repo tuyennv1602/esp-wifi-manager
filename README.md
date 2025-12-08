@@ -7,7 +7,6 @@ Features:
 - Stores credentials in Preferences (ESP32) / EEPROM-like API for ESP8266
 - Connection state machine with retry and fallback to AP mode
 
-
 ## API Reference
 
 | Function | Description |
