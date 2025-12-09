@@ -4,7 +4,7 @@
 ESP8266Preferences preferences;
 ESP8266WebServer wifiServer(80);
 #elif defined(ESP32)
-Preferences preferences;
+extern Preferences preferences;
 WebServer wifiServer(80);
 #endif
 
