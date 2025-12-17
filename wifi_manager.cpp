@@ -9,7 +9,7 @@ WebServer wifiServer(80);
 #endif
 DNSServer dnsServer;
 
-// ------------------- Config & Globals -------------------
+// ------------------- Config -------------------
 IPAddress local_IP(192, 168, 4, 1);
 IPAddress gateway(192, 168, 4, 1);
 IPAddress subnet(255, 255, 255, 0);
@@ -31,7 +31,6 @@ enum WifiState
 static WifiState wifiState = WIFI_IDLE;
 static unsigned long wifiRetryTimer = 0;
 static const unsigned long WIFI_RETRY_INTERVAL = 15000;
-
 static int currentSlot = 1;
 static std::function<void()> onWifiConnectedCallback = nullptr;
 static bool useStaticIP = false;
@@ -87,23 +86,81 @@ void ESP8266Preferences::clear()
 }
 #endif
 
-// ================= Preferences Helpers =================
-static String prefGetString(const String &key, const String &def = "")
+const char *WIFI_HTML = R"=====(
+<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WiFi Configuration</title><style>
+    body { font-family: Arial, sans-serif; background: #efefef; margin: 0; padding: 20px; }
+    .container { max-width: 600px; background: white; margin: auto; padding: 25px; border-radius: 12px; box-shadow: 0 3px 10px rgba(0,0,0,0.1); }
+    h1 { margin-top: 0; }
+    label { font-weight: bold; display:block; margin-top:10px; }
+    input[type=text], input[type=password] { width:100%; box-sizing:border-box; padding:14px; margin-top:8px; margin-bottom:14px; border-radius:6px; border:1px solid #aaa; font-size:16px; }
+    button { width:100%; padding:14px; font-size:18px; background:#4CAF50; color:#fff; border:none; border-radius:6px; cursor:pointer; }
+    button.secondary { background:#eee; color:#000; margin-top:8px; }
+    .wifi-item { padding:12px; margin-bottom:8px; background:#f5f5f5; border-radius:6px; border:1px solid #ddd; cursor:pointer; }
+</style></head><body><div class="container"><h1>WiFi Configuration</h1>
+  <label>WiFi SSID</label><input id="ssid" type="text" placeholder="Enter WiFi name">
+  <label>Password</label><input id="pass" type="password" placeholder="Password">
+  <button onclick="saveWifi()">Save & Connect</button>
+  <button class="secondary" onclick="resetWifi()">Reset Saved WiFi</button>
+  <h2>Nearby WiFi</h2><div id="list">Loading...</div></div>
+<script>
+function renderWifiList(list) {
+  const box = document.getElementById("list"); box.innerHTML = "";
+  list.sort((a,b)=>b.rssi - a.rssi);
+  list.forEach(item=>{
+    const d = document.createElement("div"); d.className = "wifi-item";
+    d.textContent = item.ssid + " (" + item.rssi + " dBm)";
+    d.onclick = ()=> document.getElementById("ssid").value = item.ssid;
+    box.appendChild(d);
+  });
+}
+function loadWifi() { fetch("/scan").then(r => r.json()).then(d => renderWifiList(d)).catch(()=> document.getElementById("list").innerText = "Failed to load"); }
+function saveWifi() {
+  const ssid = document.getElementById("ssid").value; const pass = document.getElementById("pass").value;
+  if(!ssid) { alert("SSID required"); return; }
+  fetch("/save?ssid="+encodeURIComponent(ssid)+"&pass="+encodeURIComponent(pass)).then(()=> { alert("Saved! Device will reboot."); }).catch(()=> alert("Save failed"));
+}
+function resetWifi() { if(!confirm("Reset all saved WiFi?")) return; fetch("/reset").then(()=> alert("Reset done")).catch(()=> alert("Reset failed")); }
+window.onload = function() { loadWifi(); setInterval(loadWifi, 8000); };
+</script></body></html>
+)=====";
+
+// ================= Utils =================
+String URLDecode(const String &str)
+{
+    String ret = "";
+    char c;
+    for (size_t i = 0; i < str.length(); ++i)
+    {
+        c = str.charAt(i);
+        if (c == '+')
+            ret += ' ';
+        else if (c == '%' && i + 2 < str.length())
+        {
+            ret += (char)strtol(str.substring(i + 1, i + 3).c_str(), nullptr, 16);
+            i += 2;
+        }
+        else
+            ret += c;
+    }
+    return ret;
+}
+
+static String prefGetString(const String &k, const String &d = "")
 {
     preferences.begin("wifi", true);
-    String v = preferences.getString(key.c_str(), def);
+    String v = preferences.getString(k.c_str(), d);
     preferences.end();
     return v;
 }
-static void prefPutString(const String &key, const String &value)
+static void prefPutString(const String &k, const String &v)
 {
     preferences.begin("wifi", false);
-    preferences.putString(key.c_str(), value.c_str());
+    preferences.putString(k.c_str(), v.c_str());
     preferences.end();
 }
 
-// ================= Utils Gốc =================
-void setAPName(const String &ssidIn) { apSsid = ssidIn; }
+void setAPName(const String &s) { apSsid = s; }
 void setStaticIP(IPAddress ip, IPAddress gw, IPAddress sn)
 {
     useStaticIP = true;
@@ -130,38 +187,6 @@ String getMacAddress()
     return macAddress;
 }
 
-String getIPAddress() { return WiFi.localIP().toString(); }
-bool isConnectedWifi() { return WiFi.status() == WL_CONNECTED; }
-String getConnectedSSID() { return isConnectedWifi() ? WiFi.SSID() : ""; }
-
-void resetWiFi()
-{
-    preferences.begin("wifi", false);
-    preferences.clear();
-    preferences.end();
-    Serial.println("WiFi Reset Done.");
-}
-
-String URLDecode(const String &str)
-{
-    String ret = "";
-    char c;
-    for (size_t i = 0; i < str.length(); ++i)
-    {
-        c = str.charAt(i);
-        if (c == '+')
-            ret += ' ';
-        else if (c == '%' && i + 2 < str.length())
-        {
-            ret += (char)strtol(str.substring(i + 1, i + 3).c_str(), nullptr, 16);
-            i += 2;
-        }
-        else
-            ret += c;
-    }
-    return ret;
-}
-
 String scanWiFi()
 {
     int n = WiFi.scanNetworks();
@@ -170,10 +195,9 @@ String scanWiFi()
     {
         if (i)
             json += ",";
-        json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
+        json += "{\"rssi\":" + String(WiFi.RSSI(i)) + ",\"ssid\":\"" + WiFi.SSID(i) + "\"}";
     }
-    json += "]";
-    return json;
+    return json + "]";
 }
 
 int getRSSIOf(const String &target)
@@ -185,18 +209,42 @@ int getRSSIOf(const String &target)
     return -999;
 }
 
-// ================= Logic Kết Nối =================
+void sortWiFiBySignal()
+{
+    String s1 = prefGetString("ssid1");
+    String p1 = prefGetString("pass1");
+    String s2 = prefGetString("ssid2");
+    String p2 = prefGetString("pass2");
+    if (s1 == "" || s2 == "")
+        return;
+    if (getRSSIOf(s2) > getRSSIOf(s1))
+    {
+        prefPutString("ssid1", s2);
+        prefPutString("pass1", p2);
+        prefPutString("ssid2", s1);
+        prefPutString("pass2", p1);
+    }
+}
+
+void saveWiFi(const String &S, const String &P)
+{
+    prefPutString("ssid2", prefGetString("ssid1"));
+    prefPutString("pass2", prefGetString("pass1"));
+    prefPutString("ssid1", S);
+    prefPutString("pass1", P);
+}
+
+// ================= Logic =================
 
 void startConnectSlot(int slot)
 {
-    String s = prefGetString(slot == 1 ? "ssid1" : "ssid2", "");
-    String p = prefGetString(slot == 1 ? "pass1" : "pass2", "");
+    String s = prefGetString(slot == 1 ? "ssid1" : "ssid2");
+    String p = prefGetString(slot == 1 ? "pass1" : "pass2");
     if (s == "")
     {
         wifiState = WIFI_FAILED;
         return;
     }
-    Serial.printf("Attempting Slot %d: %s\n", slot, s.c_str());
     WiFi.mode(WIFI_AP_STA);
     if (useStaticIP)
         WiFi.config(static_IP, static_gateway, static_subnet);
@@ -207,43 +255,23 @@ void startConnectSlot(int slot)
 
 void startAccessPointMode()
 {
-    Serial.println("AP Mode Active: " + apSsid);
     WiFi.softAPConfig(local_IP, gateway, subnet);
     WiFi.softAP(apSsid.c_str());
     dnsServer.start(53, "*", local_IP);
-
     if (!serverStarted)
     {
         wifiServer.on("/", HTTP_GET, []()
-                      {
-            String html = "<html><head><meta name='viewport' content='width=device-width, initial-scale=1'><title>WiFi Setup</title></head><body>"
-                          "<h2>Connect to WiFi</h2><form action='/save'>"
-                          "SSID: <br><input name='ssid' id='s'><br>"
-                          "PASS: <br><input name='pass' type='password'><br><br>"
-                          "<input type='submit' value='Save'></form>"
-                          "<h4>Nearby:</h4><div id='l'>Scanning...</div>"
-                          "<script>fetch('/scan').then(r=>r.json()).then(d=>{let h='';d.forEach(i=>{h+='<p onclick=\"document.getElementById(\\'s\\').value=\\''+i.ssid+'\\'\">'+i.ssid+' ('+i.rssi+')</p>'});document.getElementById('l').innerHTML=h;});</script></body></html>";
-            wifiServer.send(200, "text/html", html); });
+                      { wifiServer.send(200, "text/html", WIFI_HTML); });
         wifiServer.on("/scan", HTTP_GET, []()
                       { wifiServer.send(200, "application/json", scanWiFi()); });
         wifiServer.on("/save", HTTP_GET, []()
                       {
-            String s = URLDecode(wifiServer.arg("ssid"));
-            String p = URLDecode(wifiServer.arg("pass"));
-            if (s != "") {
-                String oldS = prefGetString("ssid1", "");
-                String oldP = prefGetString("pass1", "");
-                prefPutString("ssid2", oldS); prefPutString("pass2", oldP);
-                prefPutString("ssid1", s); prefPutString("pass1", p);
-                wifiServer.send(200, "text/plain", "Saved! Rebooting...");
-                delay(1000); ESP.restart();
-            } });
+            String s = URLDecode(wifiServer.arg("ssid")); String p = URLDecode(wifiServer.arg("pass"));
+            if(s != "") { saveWiFi(s, p); wifiServer.send(200, "text/plain", "OK"); delay(1000); ESP.restart(); } });
         wifiServer.on("/reset", HTTP_GET, []()
-                      { resetWiFi(); wifiServer.send(200, "text/plain", "Reset Done"); });
+                      { preferences.begin("wifi", false); preferences.clear(); preferences.end(); wifiServer.send(200, "text/plain", "OK"); });
         wifiServer.onNotFound([]()
-                              {
-            wifiServer.sendHeader("Location", "http://192.168.4.1/", true);
-            wifiServer.send(302, "text/plain", ""); });
+                              { wifiServer.sendHeader("Location", "http://192.168.4.1/", true); wifiServer.send(302, "text/plain", ""); });
         wifiServer.begin();
         serverStarted = true;
     }
@@ -252,6 +280,7 @@ void startAccessPointMode()
 
 void connectWifi()
 {
+    sortWiFiBySignal();
     currentSlot = 1;
     startConnectSlot(currentSlot);
 }
@@ -259,7 +288,7 @@ void connectWifi()
 void wifiManagerBegin()
 {
     getMacAddress();
-    if (prefGetString("ssid1", "") != "")
+    if (prefGetString("ssid1") != "")
         connectWifi();
     else
         startAccessPointMode();
@@ -283,7 +312,7 @@ void wifiManagerLoop()
         }
         else if (millis() - wifiRetryTimer > 15000)
         {
-            if (currentSlot == 1 && prefGetString("ssid2", "") != "")
+            if (currentSlot == 1 && prefGetString("ssid2") != "")
             {
                 currentSlot = 2;
                 startConnectSlot(currentSlot);
@@ -311,4 +340,14 @@ void wifiManagerLoop()
     case WIFI_AP_MODE:
         break;
     }
+}
+
+String getIPAddress() { return WiFi.localIP().toString(); }
+bool isConnectedWifi() { return WiFi.status() == WL_CONNECTED; }
+String getConnectedSSID() { return isConnectedWifi() ? WiFi.SSID() : ""; }
+void resetWiFi()
+{
+    preferences.begin("wifi", false);
+    preferences.clear();
+    preferences.end();
 }
